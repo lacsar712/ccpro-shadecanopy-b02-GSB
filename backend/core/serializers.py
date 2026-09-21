@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import ClimateLog, Greenhouse, IrrigationCycle, Zone
+from .models import ClimateLog, DurationRevision, Greenhouse, IrrigationCycle, Zone
 
 
 class GreenhouseSerializer(serializers.ModelSerializer):
@@ -107,6 +107,18 @@ class ClimateLogSerializer(serializers.ModelSerializer):
         return value
 
 
+class DurationRevisionSerializer(serializers.ModelSerializer):
+    cycleId = serializers.IntegerField(source="cycle_id", read_only=True)
+    oldMin = serializers.IntegerField(source="old_min", read_only=True)
+    newMin = serializers.IntegerField(source="new_min", read_only=True)
+    revisedAt = serializers.DateTimeField(source="revised_at", read_only=True)
+
+    class Meta:
+        model = DurationRevision
+        fields = ("id", "cycleId", "oldMin", "newMin", "reason", "revisedAt")
+        read_only_fields = fields
+
+
 class IrrigationCycleSerializer(serializers.ModelSerializer):
     zoneId = serializers.PrimaryKeyRelatedField(
         source="zone", queryset=Zone.objects.all()
@@ -120,6 +132,8 @@ class IrrigationCycleSerializer(serializers.ModelSerializer):
     greenhouseName = serializers.CharField(
         source="zone.greenhouse.name", read_only=True
     )
+    revisionCount = serializers.SerializerMethodField()
+    latestDurationMin = serializers.SerializerMethodField()
 
     class Meta:
         model = IrrigationCycle
@@ -130,6 +144,8 @@ class IrrigationCycleSerializer(serializers.ModelSerializer):
             "greenhouseName",
             "startAt",
             "durationMin",
+            "latestDurationMin",
+            "revisionCount",
             "waterLiters",
             "status",
             "created_at",
@@ -139,6 +155,31 @@ class IrrigationCycleSerializer(serializers.ModelSerializer):
             "id",
             "zoneCode",
             "greenhouseName",
+            "revisionCount",
+            "latestDurationMin",
             "created_at",
             "updated_at",
         )
+
+    def get_revisionCount(self, obj):
+        if hasattr(obj, "revision_count"):
+            return obj.revision_count
+        return obj.duration_revisions.count()
+
+    def get_latestDurationMin(self, obj):
+        # 最新时长取最新留痕的新分钟；无留痕则等于当前时长。
+        latest = getattr(obj, "latest_revision_new_min", None)
+        if latest is None:
+            return obj.duration_min
+        return latest
+
+    def validate(self, attrs):
+        # 禁止通过通用更新接口无痕覆盖时长：改时长必须走 revise-duration 留痕。
+        if self.instance is not None and "duration_min" in attrs:
+            if attrs["duration_min"] != self.instance.duration_min:
+                raise serializers.ValidationError(
+                    {
+                        "durationMin": "修改时长必须调用时长修订接口，并填写修订原因以留下留痕"
+                    }
+                )
+        return attrs

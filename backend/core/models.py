@@ -100,3 +100,23 @@ class IrrigationCycle(models.Model):
 
     def __str__(self):
         return f"Irrig@{self.zone_id} {self.start_at} ({self.status})"
+
+
+class DurationRevision(models.Model):
+    """轮灌时长修订留痕：时长一旦变更必须同事务写入一条，禁止无痕覆盖。"""
+
+    cycle = models.ForeignKey(
+        IrrigationCycle,
+        on_delete=models.CASCADE,
+        related_name="duration_revisions",
+    )
+    old_min = models.PositiveIntegerField()
+    new_min = models.PositiveIntegerField()
+    reason = models.CharField(max_length=300)
+    revised_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-revised_at", "-id"]
+
+    def __str__(self):
+        return f"DurationRevision cycle={self.cycle_id} {self.old_min}->{self.new_min}"

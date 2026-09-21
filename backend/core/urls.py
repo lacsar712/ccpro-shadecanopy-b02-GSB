@@ -7,6 +7,7 @@ from .views import (
     IrrigationCycleViewSet,
     ZoneViewSet,
     dashboard_stats,
+    irrigation_duration_audit,
 )
 
 router = DefaultRouter()
@@ -17,5 +18,10 @@ router.register("irrigation-cycles", IrrigationCycleViewSet, basename="irrigatio
 
 urlpatterns = [
     path("dashboard/", dashboard_stats, name="dashboard"),
+    path(
+        "irrigation-duration-audit/",
+        irrigation_duration_audit,
+        name="irrigation-duration-audit",
+    ),
     path("", include(router.urls)),
 ]
