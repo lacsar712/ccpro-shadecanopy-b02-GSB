@@ -311,6 +311,17 @@ textarea:focus {
   margin: 8px 0;
 }
 
+.error.raw {
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: #f9eeec;
+  border: 1px solid #e3c4bf;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.82rem;
+}
+
 .login-wrap {
   min-height: 100vh;
   display: grid;

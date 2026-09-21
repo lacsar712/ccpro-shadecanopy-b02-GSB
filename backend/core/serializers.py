@@ -1,6 +1,13 @@
+from django.db import transaction
 from rest_framework import serializers
 
-from .models import ClimateLog, Greenhouse, IrrigationCycle, Zone
+from .models import (
+    ClimateLog,
+    Greenhouse,
+    IrrigationCycle,
+    IrrigationDurationRevision,
+    Zone,
+)
 
 
 class GreenhouseSerializer(serializers.ModelSerializer):
@@ -107,18 +114,35 @@ class ClimateLogSerializer(serializers.ModelSerializer):
         return value
 
 
+class IrrigationDurationRevisionSerializer(serializers.ModelSerializer):
+    cycleId = serializers.IntegerField(source="cycle_id", read_only=True)
+    oldMin = serializers.IntegerField(source="old_min", read_only=True)
+    newMin = serializers.IntegerField(source="new_min", read_only=True)
+    revisedAt = serializers.DateTimeField(source="revised_at", read_only=True)
+
+    class Meta:
+        model = IrrigationDurationRevision
+        fields = ("id", "cycleId", "oldMin", "newMin", "reason", "revisedAt")
+        read_only_fields = fields
+
+
 class IrrigationCycleSerializer(serializers.ModelSerializer):
     zoneId = serializers.PrimaryKeyRelatedField(
         source="zone", queryset=Zone.objects.all()
     )
     startAt = serializers.DateTimeField(source="start_at")
-    durationMin = serializers.IntegerField(source="duration_min")
+    durationMin = serializers.IntegerField(source="duration_min", min_value=1)
     waterLiters = serializers.DecimalField(
         source="water_liters", max_digits=10, decimal_places=2
     )
     zoneCode = serializers.CharField(source="zone.zone_code", read_only=True)
     greenhouseName = serializers.CharField(
         source="zone.greenhouse.name", read_only=True
+    )
+    revisionCount = serializers.SerializerMethodField()
+    latestDurationMin = serializers.SerializerMethodField()
+    revisionReason = serializers.CharField(
+        write_only=True, required=False, allow_blank=True, max_length=500
     )
 
     class Meta:
@@ -130,6 +154,9 @@ class IrrigationCycleSerializer(serializers.ModelSerializer):
             "greenhouseName",
             "startAt",
             "durationMin",
+            "latestDurationMin",
+            "revisionCount",
+            "revisionReason",
             "waterLiters",
             "status",
             "created_at",
@@ -139,6 +166,53 @@ class IrrigationCycleSerializer(serializers.ModelSerializer):
             "id",
             "zoneCode",
             "greenhouseName",
+            "latestDurationMin",
+            "revisionCount",
             "created_at",
             "updated_at",
         )
+
+    def get_revisionCount(self, obj):
+        if hasattr(obj, "revision_count"):
+            return obj.revision_count
+        return obj.duration_revisions.count()
+
+    def get_latestDurationMin(self, obj):
+        # 最新时长 = 最新留痕的新分钟；无留痕则等于当前时长
+        latest = obj.duration_revisions.all().first()
+        if latest is None:
+            return obj.duration_min
+        return latest.new_min
+
+    def validate(self, attrs):
+        # 改时长且新值与库中不同：必须给出有效修订原因，否则 400 且时长保持原值
+        if self.instance is not None and "duration_min" in attrs:
+            new_min = attrs["duration_min"]
+            if new_min != self.instance.duration_min:
+                reason = (attrs.get("revisionReason") or "").strip()
+                if len(reason) < IrrigationDurationRevision.REASON_MIN_LEN:
+                    raise serializers.ValidationError(
+                        {
+                            "revisionReason": "修改时长必须填写修订原因（去空白后至少 8 字），缺留痕则时长保持原值"
+                        }
+                    )
+                attrs["revisionReason"] = reason
+        return attrs
+
+    def create(self, validated_data):
+        validated_data.pop("revisionReason", None)
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        reason = validated_data.pop("revisionReason", None)
+        new_min = validated_data.get("duration_min")
+        with transaction.atomic():
+            if reason and new_min is not None and new_min != instance.duration_min:
+                # 同事务先写留痕，再更新时长；任一步失败整体回滚
+                IrrigationDurationRevision.objects.create(
+                    cycle=instance,
+                    old_min=instance.duration_min,
+                    new_min=new_min,
+                    reason=reason,
+                )
+            return super().update(instance, validated_data)

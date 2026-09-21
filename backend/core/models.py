@@ -1,3 +1,4 @@
+from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 
@@ -100,3 +101,47 @@ class IrrigationCycle(models.Model):
 
     def __str__(self):
         return f"Irrig@{self.zone_id} {self.start_at} ({self.status})"
+
+
+class IrrigationDurationRevision(models.Model):
+    """轮灌时长修订留痕：时长一旦写入，后续修改必须留下记录，禁止无痕覆盖。"""
+
+    REASON_MIN_LEN = 8
+
+    cycle = models.ForeignKey(
+        IrrigationCycle, on_delete=models.CASCADE, related_name="duration_revisions"
+    )
+    old_min = models.PositiveIntegerField()
+    new_min = models.PositiveIntegerField()
+    reason = models.CharField(max_length=500)
+    revised_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-revised_at", "-id"]
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(new_min__gt=0),
+                name="duration_revision_new_positive",
+            ),
+            models.CheckConstraint(
+                condition=~models.Q(new_min=models.F("old_min")),
+                name="duration_revision_new_differs",
+            ),
+        ]
+
+    def clean(self):
+        if len((self.reason or "").strip()) < self.REASON_MIN_LEN:
+            raise ValidationError(
+                {"reason": "修订原因去空白后长度至少 8 字"}
+            )
+        if self.new_min is not None and self.new_min <= 0:
+            raise ValidationError({"new_min": "新分钟必须为正整数"})
+        if (
+            self.old_min is not None
+            and self.new_min is not None
+            and self.new_min == self.old_min
+        ):
+            raise ValidationError({"new_min": "新分钟必须与原分钟不同"})
+
+    def __str__(self):
+        return f"IrrigRev@{self.cycle_id} {self.old_min}->{self.new_min}"

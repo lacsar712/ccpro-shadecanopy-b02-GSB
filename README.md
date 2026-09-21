@@ -49,7 +49,22 @@ docker compose down
 3. **Zone**：greenhouseId / zoneCode / cropName / status(`idle|growing|fallow`)；同温室 zoneCode 唯一
 4. **ClimateLog**：zoneId / recordedAt / tempC / humidityPct / parUmol / co2Ppm；**humidityPct ∈ [20, 100]**
 5. **IrrigationCycle**：zoneId / startAt / durationMin / waterLiters / status(`scheduled|running|done|skipped`)
+   - 列表与详情额外返回 `revisionCount`（修订条数）与 `latestDurationMin`（最新时长）；两处取值规则一致：取最新一条留痕的新分钟，无留痕则等于当前 `durationMin`
 6. **Dashboard**：温室数、growing 分区数、近 24h 气候日志数、今日 scheduled 轮灌数 → `GET /api/dashboard/`
+
+## 轮灌时长修订留痕规则
+
+轮灌时长（分钟）一旦写入即不可无痕修改，规则如下：
+
+1. **强制留痕**：`PUT /api/irrigation-cycles/{id}/` 修改时长且新值与库中当前时长不同时，必须同事务写入一条修订记录（`IrrigationDurationRevision`），留痕与时长更新同时成功或同时回滚，禁止只改时长不留痕。
+2. **修订字段**：轮灌编号（`cycleId`）、原分钟（`oldMin`）、新分钟（`newMin`）、原因（`reason`）、修订时刻（`revisedAt`，服务端生成）。
+3. **校验**：
+   - `reason` 去空白后长度至少 **8** 字；
+   - `newMin` 必须为正整数且与原分钟不同；
+   - 缺原因/原因过短/新分钟非法时返回 **400**，时长保持原值不变。校验通过的其他字段（水量、状态等）随留痕同事务一起生效。
+4. **留痕查询**：`GET /api/irrigation-cycles/{id}/revisions/` 返回该轮灌的修订列表（新→旧）。
+5. **时长稽核**：`GET /api/irrigation-cycles/duration-audit/` 返回 `{ "cyclesWithRevisions": N }`，N 为有留痕的轮灌条数，恒等于轮灌列表中 `revisionCount > 0` 的行数。
+6. 首次创建轮灌不产生留痕；留痕只增不改不删（随轮灌删除级联清除）。
 
 ## API 一览
 
@@ -62,6 +77,8 @@ docker compose down
 | CRUD | `/api/zones/?greenhouseId=&status=` |
 | CRUD | `/api/climate-logs/?zoneId=` |
 | CRUD | `/api/irrigation-cycles/?zoneId=&status=` |
+| GET | `/api/irrigation-cycles/{id}/revisions/`（时长修订留痕） |
+| GET | `/api/irrigation-cycles/duration-audit/`（有留痕的轮灌条数） |
 | GET | `/api/dashboard/` |
 
 字段对外使用 camelCase（如 `areaM2`、`zoneCode`、`humidityPct`）。

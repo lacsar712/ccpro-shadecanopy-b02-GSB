@@ -1,17 +1,24 @@
 from datetime import timedelta
 
-from django.db.models import Count
+from django.db.models import Count, Prefetch
 from django.utils import timezone
 from rest_framework import viewsets
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from .models import ClimateLog, Greenhouse, IrrigationCycle, Zone
+from .models import (
+    ClimateLog,
+    Greenhouse,
+    IrrigationCycle,
+    IrrigationDurationRevision,
+    Zone,
+)
 from .serializers import (
     ClimateLogSerializer,
     GreenhouseSerializer,
     IrrigationCycleSerializer,
+    IrrigationDurationRevisionSerializer,
     ZoneSerializer,
 )
 
@@ -50,7 +57,19 @@ class IrrigationCycleViewSet(viewsets.ModelViewSet):
     serializer_class = IrrigationCycleSerializer
 
     def get_queryset(self):
-        qs = IrrigationCycle.objects.select_related("zone", "zone__greenhouse").all()
+        qs = (
+            IrrigationCycle.objects.select_related("zone", "zone__greenhouse")
+            .annotate(revision_count=Count("duration_revisions"))
+            .prefetch_related(
+                Prefetch(
+                    "duration_revisions",
+                    queryset=IrrigationDurationRevision.objects.order_by(
+                        "-revised_at", "-id"
+                    ),
+                )
+            )
+            .all()
+        )
         zone_id = self.request.query_params.get("zoneId")
         status = self.request.query_params.get("status")
         if zone_id:
@@ -58,6 +77,25 @@ class IrrigationCycleViewSet(viewsets.ModelViewSet):
         if status:
             qs = qs.filter(status=status)
         return qs
+
+    @action(detail=True, methods=["get"])
+    def revisions(self, request, pk=None):
+        """单条轮灌的时长修订留痕列表（新→旧）。"""
+        cycle = self.get_object()
+        serializer = IrrigationDurationRevisionSerializer(
+            cycle.duration_revisions.all(), many=True
+        )
+        return Response(serializer.data)
+
+    @action(detail=False, methods=["get"], url_path="duration-audit")
+    def duration_audit(self, request):
+        """时长稽核：有留痕的轮灌条数（与列表中 revisionCount>0 的行数一致）。"""
+        count = (
+            IrrigationCycle.objects.filter(duration_revisions__isnull=False)
+            .distinct()
+            .count()
+        )
+        return Response({"cyclesWithRevisions": count})
 
 
 @api_view(["GET"])
